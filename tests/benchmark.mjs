@@ -12,7 +12,7 @@ fs.mkdirSync(root, { recursive: true });
 const text = source + '\n/*' + 'padding '.repeat(300000) + '*/', manifest = manifestFor(text);
 const backends = [
   ...(process.env.CODEX_UNLOCK_SWIFT_BASELINE ? [['Swift', path.resolve(process.env.CODEX_UNLOCK_SWIFT_BASELINE)]] : []),
-  ['Rust', path.join(tool, 'Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgentRust')],
+  ['Rust', path.join(tool, 'Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgent')],
 ];
 function sample(pid) {
   const [rss, cpu] = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'rss=,time='], { encoding: 'utf8' }).trim().split(/\s+/);

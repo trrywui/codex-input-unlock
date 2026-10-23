@@ -15,7 +15,7 @@ test.after(() => {
   if (created) { try { fs.rmdirSync(root); } catch {} }
 });
 const app = path.join(tool, 'Codex Input Unlock.app');
-const bootstrap = path.join(app, 'Contents/Helpers/CodexUnlockAgent');
+const bootstrap = path.join(app, 'Contents/Helpers/CodexUnlockBootstrap');
 const invoke = (exe, action, data) => execFileSync(exe, [action, '--data-dir', data], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 test('正式包的应用身份、版本、图标、许可和签名一致', () => {
@@ -23,8 +23,9 @@ test('正式包的应用身份、版本、图标、许可和签名一致', () =>
   assert.equal(info.CFBundleIdentifier, 'io.github.trrywui.codex-input-unlock');
   assert.equal(info.CFBundleName, 'Codex Input Unlock');
   assert.equal(info.CFBundleDisplayName, 'Codex Input Unlock');
-  assert.equal(info.CFBundleShortVersionString, '0.3.0');
-  assert.equal(info.CFBundleVersion, '4');
+  assert.equal(info.CFBundleShortVersionString, '0.3.1');
+  assert.equal(info.CFBundleVersion, '5');
+  assert.deepEqual(fs.readdirSync(path.join(app, 'Contents/Helpers')).sort(), ['CodexUnlockAgent', 'CodexUnlockBootstrap']);
   assert.deepEqual(fs.readFileSync(path.join(app, 'Contents/Resources/ChatGPT.icns')), fs.readFileSync(path.join(tool, 'resources/ChatGPT.icns')));
   for (const file of ['LICENSE', 'NOTICE.md', 'THIRD-PARTY-LICENSES.txt']) {
     assert.deepEqual(fs.readFileSync(path.join(app, 'Contents/Resources', file)), fs.readFileSync(path.join(tool, file)));
@@ -39,7 +40,9 @@ test('正式版：Swift 控制可查询和停止 Rust，双方拒绝旧版数据
     await until(() => probe.state().state === 'ready' || probe.child.exitCode !== null);
     assert.equal(probe.state().state, 'ready', probe.errors());
     assert.equal(probe.state().backend, 'Rust');
-    assert.equal(probe.state().version, '0.3.0');
+    assert.equal(probe.state().version, '0.3.1');
+    const processPath = execFileSync('/bin/ps', ['-p', String(probe.child.pid), '-o', 'comm='], { encoding: 'utf8' }).trim();
+    assert.equal(path.basename(processPath), 'CodexUnlockAgent');
     assert.equal(JSON.parse(invoke(bootstrap, 'status', probe.data)).running, true);
     const owner = JSON.parse(fs.readFileSync(path.join(probe.data, 'owner.json')));
     assert.equal(owner.tool, 'io.github.trrywui.codex-input-unlock');

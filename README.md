@@ -1,12 +1,14 @@
 # Codex Input Unlock for macOS
 
-正式版 **0.3.0（build 4）**，Rust 常驻后台，Swift 原生启动界面。Bundle ID 为 `io.github.trrywui.codex-input-unlock`。当前 Release 提供 Intel Mac（x86_64）构建，最低系统声明为 macOS 12，实际测试系统为 macOS 14.8.9。
+正式版 **0.3.1（build 5）**，Rust 常驻后台，Swift 原生启动界面。Bundle ID 为 `io.github.trrywui.codex-input-unlock`。当前 Release 提供 Intel Mac（x86_64）构建，最低系统声明为 macOS 12，实际测试系统为 macOS 14.8.9。
 
 本工具针对 Bundle ID 为 `com.openai.codex` 的桌面客户端；应用可能名为 ChatGPT.app 或 Codex.app。它保留官方账号登录，通过 CDP 条件断点清除阻止发送的本地额度项。条件表达式返回 false，不暂停页面。不会增加推理上游额度，CPA 或中转服务仍执行自己的鉴权和限制。
 
 ## 下载与安装
 
-从 [Releases](https://github.com/trrywui/codex-input-unlock/releases) 下载 `Codex-Input-Unlock-0.3.0-macos-x86_64.zip`，解压后将 `Codex Input Unlock.app` 拖入 Applications。附件 `SHA256SUMS.txt` 提供校验和。项目代码采用 MIT 许可，依赖和图标的说明见 `NOTICE.md`。
+从 [Releases](https://github.com/trrywui/codex-input-unlock/releases) 下载 `Codex-Input-Unlock-0.3.1-macos-x86_64.zip`，解压后将 `Codex Input Unlock.app` 拖入 Applications。附件 `SHA256SUMS.txt` 提供校验和。项目代码采用 MIT 许可，依赖和图标的说明见 `NOTICE.md`。
+
+从 0.3.0 升级：先用旧版“停止解锁”，再完整替换 Applications 中的应用包，随后通过新版重新启动。运行数据目录及归属标记不变，无需清理数据。请勿合并新旧应用包的内部文件；完整替换后包内不再包含旧名 `CodexUnlockAgentRust`。
 
 本版使用新的 Bundle ID；从旧 Swift 0.2.0 或原型迁移时，请先用旧启动器停止解锁、清理其运行数据并删除旧应用，再安装本版。它不会接管旧版运行目录；如果归属校验失败，应先完成旧版清理。
 
@@ -21,7 +23,7 @@
 
 ## 资源占用与运行文件
 
-常驻进程名为 `CodexUnlockAgentRust`。Swift AppKit 界面与扫描辅助只短暂运行。Rust 使用系统 kqueue 等待 CDP、控制连接和目标进程退出事件，没有常态轮询或状态文件心跳，不依赖 Node.js、Swift、Foundation 或异步运行时。
+常驻进程名为 `CodexUnlockAgent`。Swift 扫描与启动辅助名为 `CodexUnlockBootstrap`，它和 AppKit 界面只短暂运行。Rust 使用系统 kqueue 等待 CDP、控制连接和目标进程退出事件，没有常态轮询或状态文件心跳，不依赖 Node.js、Swift、Foundation 或异步运行时。
 
 原型隔离基准中，空闲 RSS 约 7.85 MiB；Swift 基线约 18.41 MiB。该数字是单次合成负载下的 RSS，不等同于活动监视器口径，也不保证真实客户端中的固定值。正式版未重新测量性能，详见 `TEST-REPORT.md`。
 
@@ -36,9 +38,9 @@
 命令行（使用应用实际路径）：
 
 ```sh
-'./Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgentRust' status
-'./Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgentRust' stop
-'./Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgentRust' diagnose
+'./Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgent' status
+'./Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgent' stop
+'./Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgent' diagnose
 ```
 
 `clean` 会停止本工具后台并删除经归属校验的运行目录；请仅在确实需要清理运行数据时执行。
@@ -56,7 +58,7 @@
 
 提交源码后可运行 `./package.sh` 生成应用压缩包、与 Git HEAD 一致的源码包及校验和。
 
-构建脚本依据当前主机架构构建 Rust 和 Swift，并生成本机 ad-hoc 签名。当前 Release 是 x86_64；Apple Silicon 可在相应主机重建，但本次未验证 arm64。构建不会调用安装或启动命令。`resources/Info.plist` 保存应用身份，`Cargo.lock` 固定依赖。
+构建脚本依据当前主机架构构建 Rust 和 Swift，并生成本机 ad-hoc 签名。每次重建暂存应用包，并在签名校验通过后完整替换工作区交付包，避免旧可执行文件残留。当前 Release 是 x86_64；Apple Silicon 可在相应主机重建，但本次未验证 arm64。构建不会调用安装或启动命令。`resources/Info.plist` 保存应用身份，`Cargo.lock` 固定依赖。
 
 测试使用真实独立 V8 和模拟 Browser CDP，不访问账号凭证、不发出真实模型请求。macOS Unix socket 路径长度有限，请保持测试目录路径较短。可选的只读客户端静态扫描：
 

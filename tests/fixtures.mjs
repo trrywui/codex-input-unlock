@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 
 export const tool = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const helper = process.env.CODEX_UNLOCK_HELPER ? path.resolve(process.env.CODEX_UNLOCK_HELPER) : path.join(tool, 'Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgentRust');
+export const helper = process.env.CODEX_UNLOCK_HELPER ? path.resolve(process.env.CODEX_UNLOCK_HELPER) : path.join(tool, 'Codex Input Unlock.app/Contents/Helpers/CodexUnlockAgent');
 const require = createRequire(import.meta.url);
 export const oldGate = require('./reference/quota-gate.cjs');
 export const sha = value => createHash('sha256').update(value).digest('hex');

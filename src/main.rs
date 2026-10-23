@@ -21,7 +21,7 @@ use tungstenite::{protocol::WebSocketConfig, Error as WsError, Message, WebSocke
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const OWNER: &str = "io.github.trrywui.codex-input-unlock";
-const VERSION: &str = "0.3.0";
+const VERSION: &str = "0.3.1";
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 fn error(text: impl Into<String>) -> Box<dyn std::error::Error> {
     io::Error::other(text.into()).into()
@@ -1136,7 +1136,7 @@ fn bootstrap_exe() -> Result<PathBuf> {
         return Ok(path.into());
     }
     let exe = env::current_exe()?;
-    let helper = exe.parent().unwrap().join("CodexUnlockAgent");
+    let helper = exe.parent().unwrap().join("CodexUnlockBootstrap");
     if helper.exists() {
         Ok(helper)
     } else {

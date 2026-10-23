@@ -39,7 +39,7 @@ func start(_ args: Arguments) throws -> JSON {
     FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
     let log = try FileHandle(forWritingTo: logURL); defer { try? log.close() }
     let child = Process()
-    child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent("CodexUnlockAgentRust")
+    child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent("CodexUnlockAgent")
     child.arguments = ["agent", "--manifest", manifestURL.path, "--data-dir", args.directory.path]
     child.standardInput = FileHandle.nullDevice; child.standardOutput = log; child.standardError = log
     try? FileManager.default.removeItem(at: args.directory.appendingPathComponent("state.json"))
@@ -76,7 +76,7 @@ func start(_ args: Arguments) throws -> JSON {
                 }
                 emit(["state": "clean", "dataDirectory": args.directory.path])
             case "diagnose":
-                var result: JSON = ["version": "0.3.0", "backend": "Rust", "bootstrap": "Swift", "nodeRequired": false, "dataDirectory": args.directory.path, "providerCheck": false]
+                var result: JSON = ["version": "0.3.1", "backend": "Rust", "bootstrap": "Swift", "nodeRequired": false, "dataDirectory": args.directory.path, "providerCheck": false]
                 do {
                     let checked = try preflight(args.value("--app")); result["application"] = checked
                     result["desktopPids"] = applicationProcesses(checked["app"] as! String, desktopOnly: true).map(Int.init)
@@ -90,7 +90,7 @@ func start(_ args: Arguments) throws -> JSON {
             case "inspect":
                 guard let file = args.value("--archive") else { throw UnlockError("需要 --archive") }; emit(try inspectArchive(URL(fileURLWithPath: file)))
             default:
-                print("用法：CodexUnlockAgent {start|status|stop|diagnose|clean} [--app path] [--data-dir path]\n默认仅写入：" + defaultDataDirectory().path)
+                print("用法：CodexUnlockBootstrap {start|status|stop|diagnose|clean} [--app path] [--data-dir path]\n默认仅写入：" + defaultDataDirectory().path)
             }
         } catch { fail(error.localizedDescription) }
     }

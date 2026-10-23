@@ -23,7 +23,7 @@ import AppKit
         progress.center(); progress.makeKeyAndOrderFront(nil)
         DispatchQueue.global(qos: .userInitiated).async {
             let task = Process(), pipe = Pipe()
-            let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/CodexUnlockAgentRust")
+            let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/CodexUnlockAgent")
             task.executableURL = helper; task.arguments = [actions[index]]
             task.standardOutput = pipe; task.standardError = pipe; task.standardInput = FileHandle.nullDevice
             var message = "", failed = false
