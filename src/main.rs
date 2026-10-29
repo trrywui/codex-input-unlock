@@ -21,7 +21,7 @@ use tungstenite::{protocol::WebSocketConfig, Error as WsError, Message, WebSocke
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const OWNER: &str = "io.github.trrywui.codex-input-unlock";
-const VERSION: &str = "0.3.1";
+const VERSION: &str = "0.3.2";
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 fn error(text: impl Into<String>) -> Box<dyn std::error::Error> {
     io::Error::other(text.into()).into()
@@ -122,7 +122,7 @@ fn condition(location: &Value) -> Result<String> {
         "local-submit-quota" | "codex-local-quota" | "legacy-local-host" => {
             Ok(format!("({q}=false,false)"))
         }
-        "third-party-composer-dual" => {
+        "third-party-composer-dual" | "conditional-composer-dual" => {
             let c = strv(location, "conversationQuotaVariable");
             if !identifier(c) {
                 return Err(error("会话变量无效"));

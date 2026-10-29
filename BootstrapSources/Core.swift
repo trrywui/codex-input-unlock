@@ -156,6 +156,23 @@ enum Gate {
             }
         }
         if modern.count == 1 { return modern[0] }
+        var conditional: [JSON] = []
+        for consumer in consumers(#"(\#(i))=\#(i)\(\#(i)\?\#(atom):!1\)"#, name, source) {
+            let quota = part(consumer, 1, source), tail = window(source, consumer.range.location, 60000)
+            let props = matches(#"rateLimitSendBlocked:(\#(i))\|\|\#(NSRegularExpression.escapedPattern(for: quota)),rateLimitConversationSendBlocked:\1(?:[,}])"#, tail)
+            guard props.count == 1 else { continue }
+            let conversation = part(props[0], 1, tail), escaped = NSRegularExpression.escapedPattern(for: conversation)
+            let state = matches(#"sendBlocked:\#(escaped)\}=\#(i)\.rateLimitState"#, tail)
+            guard state.count == 1, NSMaxRange(state[0].range) < props[0].range.location else { continue }
+            let bodyStart = NSMaxRange(state[0].range)
+            let body = tail.substring(with: NSRange(location: bodyStart, length: props[0].range.location - bodyStart)) as NSString
+            let blocks = matches(#"(\#(i))=([^,;]{1,2000}?\|\|\#(escaped)\|\|\#(NSRegularExpression.escapedPattern(for: quota)))(?=\|\||[,;)])"#, body)
+            guard blocks.count == 1 else { continue }
+            let start = consumer.range.location + bodyStart + blocks[0].range(at: 2).location
+            guard (window(source, start, 60000) as String).contains("submitDisabled:") else { continue }
+            conditional.append(location(source, start, quota, "conditional-composer-dual", start + 1, conversation))
+        }
+        if !conditional.isEmpty { return conditional.count == 1 ? conditional[0] : nil }
         var submit: [JSON] = []
         for consumer in consumers(#"(\#(i))=\#(i)\((?:[^()]{0,200}?&&\s*)?\#(atom)\)"#, name, source) {
             let quota = part(consumer, 1, source), tail = window(source, consumer.range.location, 20000)
@@ -175,7 +192,7 @@ enum Gate {
         guard let quota = location["quotaVariable"] as? String,
               matches("^" + id + "$", quota as NSString).count == 1,
               let mode = location["mode"] as? String else { throw UnlockError("额度变量无效") }
-        if mode == "third-party-composer-dual" {
+        if ["third-party-composer-dual", "conditional-composer-dual"].contains(mode) {
             guard let conversation = location["conversationQuotaVariable"] as? String, matches("^" + id + "$", conversation as NSString).count == 1 else { throw UnlockError("会话额度变量无效") }
             return "(\(conversation)=false,\(quota)=false,false)"
         }

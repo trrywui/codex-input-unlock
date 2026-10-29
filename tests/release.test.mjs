@@ -23,8 +23,8 @@ test('正式包的应用身份、版本、图标、许可和签名一致', () =>
   assert.equal(info.CFBundleIdentifier, 'io.github.trrywui.codex-input-unlock');
   assert.equal(info.CFBundleName, 'Codex Input Unlock');
   assert.equal(info.CFBundleDisplayName, 'Codex Input Unlock');
-  assert.equal(info.CFBundleShortVersionString, '0.3.1');
-  assert.equal(info.CFBundleVersion, '5');
+  assert.equal(info.CFBundleShortVersionString, '0.3.2');
+  assert.equal(info.CFBundleVersion, '6');
   assert.deepEqual(fs.readdirSync(path.join(app, 'Contents/Helpers')).sort(), ['CodexUnlockAgent', 'CodexUnlockBootstrap']);
   assert.deepEqual(fs.readFileSync(path.join(app, 'Contents/Resources/ChatGPT.icns')), fs.readFileSync(path.join(tool, 'resources/ChatGPT.icns')));
   for (const file of ['LICENSE', 'NOTICE.md', 'THIRD-PARTY-LICENSES.txt']) {
@@ -40,7 +40,7 @@ test('正式版：Swift 控制可查询和停止 Rust，双方拒绝旧版数据
     await until(() => probe.state().state === 'ready' || probe.child.exitCode !== null);
     assert.equal(probe.state().state, 'ready', probe.errors());
     assert.equal(probe.state().backend, 'Rust');
-    assert.equal(probe.state().version, '0.3.1');
+    assert.equal(probe.state().version, '0.3.2');
     const processPath = execFileSync('/bin/ps', ['-p', String(probe.child.pid), '-o', 'comm='], { encoding: 'utf8' }).trim();
     assert.equal(path.basename(processPath), 'CodexUnlockAgent');
     assert.equal(JSON.parse(invoke(bootstrap, 'status', probe.data)).running, true);

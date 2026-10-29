@@ -5,7 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { source, url, oldGate, command, jsonCommand, launchFixture, launchProbe, until, sleep, manifestFor, helper } from './fixtures.mjs';
+import { source, conditionalSource, url, oldGate, command, jsonCommand, launchFixture, launchProbe, until, sleep, manifestFor, helper } from './fixtures.mjs';
 import { CdpSession } from './reference/cdp.mjs';
 
 if (!process.env.CODEX_UNLOCK_TEST_ROOT) throw new Error('请显式设置 CODEX_UNLOCK_TEST_ROOT 为工作区内较短的测试目录，避免 macOS Unix socket 路径超长或写入未知位置');
@@ -41,13 +41,43 @@ test('UTF-16：emoji 和换行不改变与 CDP 的坐标一致性', () => {
 test('歧义或损坏代码不解锁', () => {
   assert.throws(() => locate(source + source)); assert.throws(() => locate('const unrelated=1;'));
 });
+test('条件额度读取：在发送限制合并前定位，UTF-16 坐标准确', () => {
+  for (const prefix of ['', '/*🦊中文*/', '/*🦊中文*/\n']) {
+    const text = prefix + conditionalSource, location = locate(text);
+    const offset = text.indexOf('busy||conversation||quotaBlocked||empty');
+    const lines = text.slice(0, offset).split('\n');
+    assert.equal(location.mode, 'conditional-composer-dual');
+    assert.equal(location.quotaVariable, 'quotaBlocked');
+    assert.equal(location.conversationQuotaVariable, 'conversation');
+    assert.equal(location.lineNumber, lines.length - 1);
+    assert.equal(location.columnNumber, lines.at(-1).length);
+    assert.equal(location.endLineNumber, location.lineNumber);
+    assert.equal(location.endColumnNumber, location.columnNumber + 1);
+    assert.equal(location.condition, '(conversation=false,quotaBlocked=false,false)');
+  }
+});
+test('条件额度读取：拒绝不完整、歧义和不相干的发送限制', () => {
+  for (const text of [
+    conditionalSource + conditionalSource,
+    conditionalSource.replace('active?XP:!1', 'active?XP:!0'),
+    conditionalSource.replace('rateLimitConversationSendBlocked:conversation', 'rateLimitConversationSendBlocked:other'),
+    conditionalSource.replace('sendBlocked:conversation}', 'unrelated:conversation}'),
+    conditionalSource.replace('busy||conversation||quotaBlocked||empty', 'busy||empty'),
+    conditionalSource.replace('combined=busy', 'second=busy||conversation||quotaBlocked,combined=busy'),
+    conditionalSource.replace('rateLimitSendBlocked:conversation||quotaBlocked', 'rateLimitSendBlocked:conversation||quotaBlocked,rateLimitConversationSendBlocked:conversation,rateLimitSendBlocked:conversation||quotaBlocked'),
+  ]) assert.throws(() => locate(text));
+});
 test('指定客户端 ASAR：静态预检成功且不修改原文件', { skip: !process.env.CODEX_UNLOCK_APP_ARCHIVE }, () => {
   const began = Date.now();
   const archive = process.env.CODEX_UNLOCK_APP_ARCHIVE;
   const digest = () => createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
   const before = digest();
   const info = jsonCommand('inspect', '--archive', archive);
-  assert.ok(info.location.mode); assert.equal(info.condition, oldGate.condition(info.location));
+  assert.ok(info.location.mode);
+  const expected = info.location.mode === 'conditional-composer-dual'
+    ? `(${info.location.conversationQuotaVariable}=false,${info.location.quotaVariable}=false,false)`
+    : oldGate.condition(info.location);
+  assert.equal(info.condition, expected);
   assert.match(info.bundleSha256, /^[a-f0-9]{64}$/);
   assert.equal(digest(), before);
   assert.ok(Date.now() - began < 5000, '静态扫描必须避免 ICU 正则的过量回溯');
@@ -63,6 +93,8 @@ test('ASAR 无匹配、多匹配与损坏数据均拒绝', () => {
     fs.writeFileSync(file, Buffer.concat([prefix, json, Buffer.alloc(size - 8 - json.length), ...Object.values(contents).map(s => Buffer.from(s))]));
   }
   archive({ 'one.js': source }); assert.equal(jsonCommand('inspect', '--archive', file).location.mode, 'local-submit-quota');
+  archive({ 'conditional.js': conditionalSource }); assert.equal(jsonCommand('inspect', '--archive', file).location.mode, 'conditional-composer-dual');
+  archive({ 'one.js': source, 'conditional.js': conditionalSource }); assert.throws(() => command('inspect', '--archive', file));
   archive({ 'one.js': source, 'two.js': source }); assert.throws(() => command('inspect', '--archive', file));
   archive({ 'none.js': 'const noQuota=1' }); assert.throws(() => command('inspect', '--archive', file));
   fs.writeFileSync(file, Buffer.alloc(3)); assert.throws(() => command('inspect', '--archive', file));
@@ -79,19 +111,26 @@ test('后台二进制不链接 AppKit、JavaScriptCore、WebKit 或 Node', () =>
   assert.doesNotMatch(links, /AppKit|JavaScriptCore|WebKit|libnode/);
 });
 
-test('真实 V8：原生后台解锁、保留其它限制、无暂停、停止恢复', { timeout: 20000 }, async () => {
-  const fixture = await launchFixture(directory()); let probe; let reader;
+for (const [label, text] of [['原有额度读取', source], ['条件额度读取', conditionalSource]]) test('真实 V8：' + label + '解锁、保留其它限制、无暂停、停止恢复', { timeout: 20000 }, async () => {
+  const fixture = await launchFixture(directory(), text); let probe; let reader;
   try {
     reader = new CdpSession(fixture.ws); await reader.connect();
     await until(async () => await reader.evaluate('typeof fixture !== "undefined"'));
     assert.equal(await reader.evaluate('fixture.render().submitDisabled'), true);
     let paused = 0; reader.on('Debugger.paused', () => { paused++; void reader.send('Debugger.resume'); });
-    probe = await launchProbe(directory(), fixture.ws);
+    const location = locate(text);
+    const manifest = { url, location, condition: location.condition, bundleSha256: createHash('sha256').update(text).digest('hex') };
+    probe = await launchProbe(directory(), fixture.ws, manifest);
     await until(() => probe.state().state === 'ready' || probe.child.exitCode !== null);
     assert.equal(probe.state().state, 'ready', probe.errors());
     assert.equal(await reader.evaluate('fixture.render().submitDisabled'), false);
     assert.equal(await reader.evaluate('fixture.render({busy:true}).submitDisabled'), true);
     assert.equal(await reader.evaluate('fixture.render({empty:true}).submitDisabled'), true);
+    if (text === conditionalSource) {
+      assert.equal(await reader.evaluate('fixture.render().rateLimitSendBlocked'), false);
+      assert.equal(await reader.evaluate('fixture.render().rateLimitConversationSendBlocked'), false);
+      assert.equal(await reader.evaluate('fixture.render({enabled:false,conversationBlocked:false}).submitDisabled'), false);
+    }
     assert.equal(paused, 0);
     const mtime = fs.statSync(path.join(probe.data, 'state.json')).mtimeMs;
     await sleep(1200);
@@ -99,6 +138,11 @@ test('真实 V8：原生后台解锁、保留其它限制、无暂停、停止�
     assert.equal(jsonCommand('status', '--data-dir', probe.data).running, true);
     await probe.stop();
     assert.equal(await reader.evaluate('fixture.render().submitDisabled'), true);
+    if (text === conditionalSource) {
+      assert.equal(await reader.evaluate('fixture.render().rateLimitSendBlocked'), true);
+      assert.equal(await reader.evaluate('fixture.render().rateLimitConversationSendBlocked'), true);
+      assert.equal(await reader.evaluate('fixture.render({enabled:false,conversationBlocked:false}).submitDisabled'), false);
+    }
     assert.equal(fs.existsSync(path.join(probe.data, 'control.sock')), false);
     command('clean', '--data-dir', probe.data); assert.equal(fs.existsSync(probe.data), false);
   } finally { await probe?.stop(); reader?.close(); await fixture.stop(); }
