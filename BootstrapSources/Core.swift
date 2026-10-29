@@ -111,8 +111,8 @@ enum Gate {
         if let conversation = conversation { result["conversationQuotaVariable"] = conversation }
         return result
     }
-    static func locate(_ input: String) -> JSON? {
-        let source = input as NSString, i = id
+    static func quotaAtom(_ source: NSString) -> String? {
+        let i = id
         let atomPattern = #"(\#(i))=\#(i)\(\#(i),\(\{get:\#(i)\}\)=>\{[^}]{0,1400}?\.authMethod!==`chatgpt`[^}]{0,1400}?\.rate_limit\?\.allowed!==!1"#
         // Anchor the expensive ICU expression to literal quota markers. Never scan
         // megabytes of unrelated minified assignments with an unanchored regex.
@@ -122,7 +122,11 @@ enum Gate {
             let tail = source.substring(with: NSRange(location: begin, length: NSMaxRange(marker.range) - begin)) as NSString
             for atom in matches(atomPattern, tail) { atoms[begin + atom.range.location] = part(atom, 1, tail) }
         }
-        guard atoms.count == 1, let name = atoms.values.first else { return nil }
+        return atoms.count == 1 ? atoms.values.first : nil
+    }
+    static func locate(_ input: String, importedAtom: String? = nil) -> JSON? {
+        let source = input as NSString, i = id
+        guard let name = importedAtom ?? quotaAtom(source) else { return nil }
         let atom = NSRegularExpression.escapedPattern(for: name)
         let local = consumers(#"(\#(i))=\#(i)\(\#(atom)\)&&(\#(i))===`local`"#, name, source)
         var direct: [JSON] = []
@@ -215,7 +219,12 @@ func inspectArchive(_ file: URL) throws -> JSON {
     let headerSize = Int(u32(4)), jsonSize = Int(u32(12))
     guard u32(0) == 4, jsonSize <= 32 * 1024 * 1024, headerSize >= jsonSize + 8 else { throw UnlockError("不支持的 ASAR 头部") }
     let header = try object(read(16, jsonSize)); let base = UInt64(8 + headerSize)
-    var results: [JSON] = []
+    var results: [JSON] = [], nativeResults: [JSON] = []
+    var atomSources: [(name: String, source: NSString, atom: String)] = []
+    var adapters: [(name: String, data: Data, source: String)] = []
+    func result(_ name: String, _ data: Data, _ location: JSON) throws -> JSON {
+        ["url": "app://-/assets/" + URL(fileURLWithPath: name).lastPathComponent, "archiveName": name, "bundleSha256": digest(data), "location": location, "condition": try Gate.condition(location)]
+    }
     func walk(_ node: JSON, _ parent: String) throws {
         for (name, value) in node["files"] as? JSON ?? [:] {
             guard let entry = value as? JSON else { continue }
@@ -226,13 +235,46 @@ func inspectArchive(_ file: URL) throws -> JSON {
                   let offsetString = entry["offset"] as? String, let offset = UInt64(offsetString), offset <= size, base <= size - offset else { throw UnlockError("ASAR 脚本范围无效") }
             try autoreleasepool {
                 let data = try read(base + offset, length)
-                guard data.range(of: Data("submitDisabled:".utf8)) != nil, data.range(of: Data(".rate_limit?.allowed!==!1".utf8)) != nil,
-                      let source = String(data: data, encoding: .utf8), let location = Gate.locate(source) else { return }
-                results.append(["url": "app://-/assets/" + URL(fileURLWithPath: full).lastPathComponent, "archiveName": full, "bundleSha256": digest(data), "location": location, "condition": try Gate.condition(location)])
+                let hasAtom = data.range(of: Data(".rate_limit?.allowed!==!1".utf8)) != nil
+                let isAdapter = data.range(of: Data("captureLocalSubmitContext:".utf8)) != nil && data.range(of: Data("resolvedHostId:".utf8)) != nil
+                guard hasAtom || isAdapter, let source = String(data: data, encoding: .utf8) else { return }
+                if hasAtom, let atom = Gate.quotaAtom(source as NSString) { atomSources.append((full, source as NSString, atom)) }
+                guard data.range(of: Data("submitDisabled:".utf8)) != nil else { return }
+                if isAdapter { adapters.append((full, data, source)) }
+                if hasAtom, let location = Gate.locate(source) { results.append(try result(full, data, location)) }
             }
         }
     }
     try walk(header, "")
+    for adapter in adapters {
+        let text = adapter.source as NSString
+        for origin in atomSources {
+            let exports = Gate.matches(#"(?:[,{])\#(NSRegularExpression.escapedPattern(for: origin.atom)) as (\#(Gate.id))(?=[,}])"#, origin.source)
+            for exported in exports {
+                let symbol = NSRegularExpression.escapedPattern(for: Gate.part(exported, 1, origin.source))
+                let file = NSRegularExpression.escapedPattern(for: URL(fileURLWithPath: origin.name).lastPathComponent)
+                for imported in Gate.matches(#"import\{([^}]+)\}from["']\./\#(file)["']"#, text) {
+                    let bindings = Gate.part(imported, 1, text) as NSString
+                    for binding in Gate.matches(#"(?:^|,)\#(symbol) as (\#(Gate.id))(?=,|$)"#, bindings) {
+                        let alias = Gate.part(binding, 1, bindings)
+                        let consumers = Gate.consumers(#"(\#(Gate.id))=\#(Gate.id)\(\#(Gate.id)===`local`&&\#(NSRegularExpression.escapedPattern(for: alias))\)"#, alias, text)
+                        guard consumers.count == 1,
+                              let location = Gate.locate(adapter.source, importedAtom: alias), location["mode"] as? String == "local-submit-quota",
+                              location["quotaVariable"] as? String == Gate.part(consumers[0], 1, text) else { continue }
+                        let prefix = text.substring(to: consumers[0].range.location) as NSString
+                        guard let component = Gate.matches(#"function (\#(Gate.id))\(\#(Gate.id)\)\{"#, prefix).last else { continue }
+                        var refreshedLocation = location
+                        refreshedLocation["componentName"] = Gate.part(component, 1, prefix)
+                        nativeResults.append(try result(adapter.name, adapter.data, refreshedLocation))
+                    }
+                }
+            }
+        }
+    }
+    if !adapters.isEmpty {
+        guard nativeResults.count == 1 else { throw UnlockError("本地编辑器额度门禁未唯一定位（匹配 \(nativeResults.count) 个位置），需要适配当前版本") }
+        return nativeResults[0]
+    }
     guard results.count == 1 else { throw UnlockError("前端额度门禁未唯一定位（匹配 \(results.count) 个文件），需要适配当前版本") }
     return results[0]
 }

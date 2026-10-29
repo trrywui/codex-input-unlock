@@ -76,7 +76,7 @@ func start(_ args: Arguments) throws -> JSON {
                 }
                 emit(["state": "clean", "dataDirectory": args.directory.path])
             case "diagnose":
-                var result: JSON = ["version": "0.3.2", "backend": "Rust", "bootstrap": "Swift", "nodeRequired": false, "dataDirectory": args.directory.path, "providerCheck": false]
+                var result: JSON = ["version": "0.3.3", "backend": "Rust", "bootstrap": "Swift", "nodeRequired": false, "dataDirectory": args.directory.path, "providerCheck": false]
                 do {
                     let checked = try preflight(args.value("--app")); result["application"] = checked
                     result["desktopPids"] = applicationProcesses(checked["app"] as! String, desktopOnly: true).map(Int.init)

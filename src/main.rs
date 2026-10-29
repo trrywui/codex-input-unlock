@@ -21,13 +21,42 @@ use tungstenite::{protocol::WebSocketConfig, Error as WsError, Message, WebSocke
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const OWNER: &str = "io.github.trrywui.codex-input-unlock";
-const VERSION: &str = "0.3.2";
+const VERSION: &str = "0.3.3";
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 fn error(text: impl Into<String>) -> Box<dyn std::error::Error> {
     io::Error::other(text.into()).into()
 }
 fn strv<'a>(v: &'a Value, name: &str) -> &'a str {
     v.get(name).and_then(Value::as_str).unwrap_or("")
+}
+fn composer_refresh(manifest: &Value) -> Option<String> {
+    let component = manifest["location"]["componentName"].as_str()?;
+    let expression = r#"(() => {
+        if (typeof document === 'undefined') return 0;
+        const visited = new Set();
+        let refreshed = 0;
+        const roots = document.querySelectorAll('[data-codex-composer-root]');
+        for (const root of roots) {
+            const property = Object.keys(root).find(name => name.startsWith('__reactFiber$'));
+            let fiber = root[property];
+            for (let depth = 0; fiber && depth < 100; depth++, fiber = fiber.return) {
+                if (fiber.type?.name !== __COMPONENT__) continue;
+                if (visited.has(fiber)) break;
+                visited.add(fiber);
+                const hooks = [];
+                for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+                    if (hook.memoizedState instanceof Set && typeof hook.queue?.dispatch === 'function') hooks.push(hook);
+                }
+                if (hooks.length !== 1) throw Error('本地编辑器缓存刷新未唯一定位');
+                hooks[0].queue.dispatch(new Set(hooks[0].memoizedState));
+                refreshed++;
+                break;
+            }
+        }
+        if (roots.length && !refreshed) throw Error('本地编辑器组件未定位');
+        return new Promise(resolve => setTimeout(() => resolve(refreshed), 0));
+    })()"#;
+    Some(expression.replace("__COMPONENT__", &json!(component).to_string()))
 }
 fn read_json(path: &Path) -> Result<Value> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
@@ -452,6 +481,7 @@ enum Kind {
     Source(String, u64),
     Positions(String, u64, String),
     Mounted(String, u64),
+    Refreshed(String, u64),
     Cleanup,
 }
 struct Request {
@@ -810,8 +840,23 @@ impl Agent {
         }
         if matches!(method, "Target.targetCreated" | "Target.targetInfoChanged") {
             let info = &p["targetInfo"];
-            let target_url = strv(info, "url").split('?').next().unwrap_or("");
-            if strv(info, "type") == "page" && target_url == "app://-/index.html" {
+            let url = strv(info, "url");
+            let target_url = url.split('?').next().unwrap_or("");
+            let avatar_overlay = url
+                .split('?')
+                .nth(1)
+                .unwrap_or("")
+                .split('&')
+                .any(|parameter| {
+                    matches!(
+                        parameter,
+                        "initialRoute=%2Favatar-overlay"
+                            | "initialRoute=%2favatar-overlay"
+                            | "initialRoute=/avatar-overlay"
+                    )
+                });
+            if strv(info, "type") == "page" && target_url == "app://-/index.html" && !avatar_overlay
+            {
                 let id = strv(info, "targetId").to_string();
                 self.targets.insert(id.clone());
                 self.attach(id)?;
@@ -860,6 +905,7 @@ impl Agent {
             Kind::Scoped(key, generation)
             | Kind::Source(key, generation)
             | Kind::Positions(key, generation, _)
+            | Kind::Refreshed(key, generation)
                 if !self
                     .renderers
                     .get(key)
@@ -961,8 +1007,17 @@ impl Agent {
                 if let Some(r) = self.renderers.get_mut(&key) {
                     if r.generation == generation {
                         r.breakpoint = Some(bp);
-                        r.ready = true;
-                        self.report()?;
+                        if let Some(expression) = composer_refresh(&self.manifest) {
+                            self.send(
+                                "Runtime.evaluate",
+                                json!({"expression":expression,"awaitPromise":true,"returnByValue":true}),
+                                self.session(&key),
+                                Kind::Refreshed(key, generation),
+                            )?;
+                        } else {
+                            r.ready = true;
+                            self.report()?;
+                        }
                     } else {
                         self.send(
                             "Debugger.removeBreakpoint",
@@ -971,6 +1026,15 @@ impl Agent {
                             Kind::Ignore,
                         )?;
                     }
+                }
+            }
+            Kind::Refreshed(key, _) => {
+                if data.get("exceptionDetails").is_some() {
+                    return Err(error("本地编辑器缓存刷新失败，需要适配"));
+                }
+                if let Some(renderer) = self.renderers.get_mut(&key) {
+                    renderer.ready = true;
+                    self.report()?;
                 }
             }
             _ => {}
@@ -1035,6 +1099,14 @@ impl Agent {
                     sid.clone(),
                     Kind::Cleanup,
                 );
+                if let Some(expression) = composer_refresh(&self.manifest) {
+                    let _ = self.send(
+                        "Runtime.evaluate",
+                        json!({"expression":expression,"awaitPromise":true,"returnByValue":true}),
+                        sid.clone(),
+                        Kind::Cleanup,
+                    );
+                }
             }
             let _ = self.send("Debugger.disable", json!({}), sid, Kind::Cleanup);
         }

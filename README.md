@@ -1,14 +1,14 @@
 # Codex Input Unlock for macOS
 
-正式版 **0.3.2（build 6）**，Rust 常驻后台，Swift 原生启动界面。Bundle ID 为 `io.github.trrywui.codex-input-unlock`。当前 Release 提供 Intel Mac（x86_64）构建，最低系统声明为 macOS 12，实际测试系统为 macOS 14.8.9。
+正式版 **0.3.3（build 7）**，Rust 常驻后台，Swift 原生启动界面。Bundle ID 为 `io.github.trrywui.codex-input-unlock`。当前 Release 提供 Intel Mac（x86_64）构建，最低系统声明为 macOS 12，实际测试系统为 macOS 14.8.9。
 
 本工具针对 Bundle ID 为 `com.openai.codex` 的桌面客户端；应用可能名为 ChatGPT.app 或 Codex.app。它保留官方账号登录，通过 CDP 条件断点清除阻止发送的本地额度项。条件表达式返回 false，不暂停页面。不会增加推理上游额度，CPA 或中转服务仍执行自己的鉴权和限制。
 
 ## 下载与安装
 
-从 [Releases](https://github.com/trrywui/codex-input-unlock/releases) 下载 `Codex-Input-Unlock-0.3.2-macos-x86_64.zip`，解压后将 `Codex Input Unlock.app` 拖入 Applications。附件 `SHA256SUMS.txt` 提供校验和。项目代码采用 MIT 许可，依赖和图标的说明见 `NOTICE.md`。
+从 [Releases](https://github.com/trrywui/codex-input-unlock/releases) 下载 `Codex-Input-Unlock-0.3.3-macos-x86_64.zip`，解压后将 `Codex Input Unlock.app` 拖入 Applications。附件 `SHA256SUMS.txt` 提供校验和。项目代码采用 MIT 许可，依赖和图标的说明见 `NOTICE.md`。
 
-从 0.3.0 或 0.3.1 升级：先用旧版“停止解锁”，再完整替换 Applications 中的应用包，随后通过新版重新启动。运行数据目录及归属标记不变，无需清理数据。请勿合并新旧应用包的内部文件；完整替换后包内不再包含旧名 `CodexUnlockAgentRust`。
+从 0.3.0–0.3.2 升级：先用旧版“停止解锁”，再完整替换 Applications 中的应用包，随后通过新版重新启动。运行数据目录及归属标记不变，无需清理数据。请勿合并新旧应用包的内部文件；完整替换后包内不再包含旧名 `CodexUnlockAgentRust`。
 
 本版使用新的 Bundle ID；从旧 Swift 0.2.0 或原型迁移时，请先用旧启动器停止解锁、清理其运行数据并删除旧应用，再安装本版。它不会接管旧版运行目录；如果归属校验失败，应先完成旧版清理。
 
@@ -78,7 +78,7 @@ node tests/benchmark.mjs "$PWD/work/b" "$PWD/work/benchmark.json"
 
 本版沿用“不检查当前 provider”的约定。仅连接本机回环调试端口，并检查端口所属应用。启动前扫描 ASAR，运行时核对 JS 哈希；定位失败、不唯一或哈希变化会停止，需要适配新版客户端。不会修改官方应用包、账号凭证或 provider 配置。
 
-0.3.2 已适配客户端 `26.1023.50603 / build 22391` 的条件额度读取及发送限制合并结构，修复启动时“前端额度门禁未唯一定位（匹配 0 个文件）”。目前验证了隔离测试与该版本客户端静态扫描；真实客户端的首次冷启动、额度为 0 时的界面发送及 CPA 回答仍待用户手动验收。
+0.3.3 修复“后台显示就绪，但本地编辑器在零额度时发送按钮仍为灰色”：沿 JS 的 export/import 别名定位实际本地编辑器中的额度变量，优先于另一套编辑器的匹配，并在挂载和停止时各刷新一次编辑器的缓存状态；不改变状态内容或输入文字。本地调用链或缓存刷新结构不完整、不唯一时停止。已在客户端 `26.1023.51421 / build 22530` 的实际窗口中确认，非空输入的发送按钮由禁用变为可用。没有点击发送或发出模型请求；真实发送及 CPA 回答仍待手动验收。原有同文件额度分支保留兼容回归。
 
 Release 应用使用 ad-hoc 签名，未做 Developer ID 签名或 Apple 公证。macOS 可能要求在“系统设置 → 隐私与安全性”中允许打开。项目不提供自动更新。源码目录已附 `.gitignore`，应用和压缩包作为 Release 附件发布。
 

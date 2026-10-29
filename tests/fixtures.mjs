@@ -12,6 +12,8 @@ export const oldGate = require('./reference/quota-gate.cjs');
 export const sha = value => createHash('sha256').update(value).digest('hex');
 export const source = '(()=>{const K={},A={},B={};function Xl(){return {}}let XP=Xl(K,({get:e})=>{let t=e(A),n=e(B);if(t.authMethod!==`chatgpt`||n.rate_limit?.allowed!==!1)return!1;return!0});let quota=true;function X(v){return v?quota:false}function render({busy=false,empty=false}={}){let bt=`local`,vn=X(bt===`local`&&XP);let Zn=busy||empty||vn,Qn;return {submitDisabled:Zn}}return {render}})()';
 export const conditionalSource = '(()=>{const K={},A={},B={};function Xl(){return {}}let XP=Xl(K,({get:e})=>{let t=e(A),n=e(B);if(t.authMethod!==`chatgpt`||n.rate_limit?.allowed!==!1)return!1;return!0});let quota=true;function X(v){return v?quota:false}function render({busy=false,empty=false,enabled=true,conversationBlocked=true}={}){let active=enabled,quotaBlocked=X(active?XP:!1);let state={rateLimitState:{sendBlocked:conversationBlocked}};let {sendBlocked:conversation}=state.rateLimitState;let combined=busy||conversation||quotaBlocked||empty,blocked=combined,disabled=blocked;return {submitDisabled:disabled,rateLimitSendBlocked:conversation||quotaBlocked,rateLimitConversationSendBlocked:conversation}}return {render}})()';
+export const quotaModule = 'const K={};function Xl(){return true}let XP=Xl(K,({get:e})=>{if(t.authMethod!==`chatgpt`||n.rate_limit?.allowed!==!1)return!1;return!0});export{XP as quotaFlag};';
+export const adapterModule = 'import{quotaFlag as NativeQuota}from"./quota.js";function X(value){return !!value}export function Adapter(settings){const{busy=false,empty=false,disabled=false,modelLoading=false,policy=false,host="local"}=settings||{};let quotaBlocked=X(host===`local`&&NativeQuota);let context={captureLocalSubmitContext:null,resolvedHostId:host};let blocked=disabled||busy||modelLoading||policy||quotaBlocked,next;return{submitDisabled:blocked||empty,context}}export const fixture={render:Adapter};';
 export const url = 'app://-/assets/fixture.js';
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 export const command = (action, ...args) => execFileSync(helper, [action, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
@@ -42,12 +44,15 @@ export async function launchProbe(directory, ws, manifest = manifestFor(), extra
     }
   } };
 }
-export async function launchFixture(directory, text = source) {
+export async function launchFixture(directory, text = source, dependencies = null) {
   directory = path.resolve(directory);
   fs.mkdirSync(directory, { recursive: true });
   const file = path.join(directory, 'fixture.cjs');
-  fs.writeFileSync(file, `const vm=require('node:vm');globalThis.fixture=vm.runInThisContext(${JSON.stringify(text)},{filename:${JSON.stringify(url)}});setInterval(()=>{},1000);`);
-  const child = spawn(process.execPath, ['--inspect=127.0.0.1:0', file], { cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: '' } });
+  const body = dependencies == null
+    ? `globalThis.fixture=vm.runInThisContext(${JSON.stringify(text)},{filename:${JSON.stringify(url)}});`
+    : `const modules=${JSON.stringify(dependencies)};const main=new vm.SourceTextModule(${JSON.stringify(text)},{identifier:${JSON.stringify(url)}});(async()=>{await main.link(name=>new vm.SourceTextModule(modules[name]));await main.evaluate();globalThis.fixture=main.namespace.fixture;})().catch(error=>{console.error(error);process.exit(1)});`;
+  fs.writeFileSync(file, `const vm=require('node:vm');${body}setInterval(()=>{},1000);`);
+  const child = spawn(process.execPath, [...(dependencies == null ? [] : ['--experimental-vm-modules']), '--inspect=127.0.0.1:0', file], { cwd: directory, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: '' } });
   let stderr = ''; child.stderr.on('data', chunk => { stderr += chunk; });
   await until(() => /ws:\/\/127\.0\.0\.1:\d+\/\S+/.test(stderr) || child.exitCode !== null);
   const ws = /ws:\/\/127\.0\.0\.1:\d+\/\S+/.exec(stderr)?.[0];

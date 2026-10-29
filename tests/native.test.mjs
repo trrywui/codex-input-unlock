@@ -5,7 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { source, conditionalSource, url, oldGate, command, jsonCommand, launchFixture, launchProbe, until, sleep, manifestFor, helper } from './fixtures.mjs';
+import { source, conditionalSource, quotaModule, adapterModule, url, oldGate, command, jsonCommand, launchFixture, launchProbe, until, sleep, manifestFor, helper } from './fixtures.mjs';
 import { CdpSession } from './reference/cdp.mjs';
 
 if (!process.env.CODEX_UNLOCK_TEST_ROOT) throw new Error('请显式设置 CODEX_UNLOCK_TEST_ROOT 为工作区内较短的测试目录，避免 macOS Unix socket 路径超长或写入未知位置');
@@ -20,6 +20,14 @@ test.after(() => {
 let seq = 0;
 const directory = () => path.join(scratch, String(++seq));
 function locate(text) { const file = path.join(scratch, 'source.js'); fs.writeFileSync(file, text); return jsonCommand('locate', '--source', file); }
+function writeArchive(file, contents) {
+  const files = {}; let offset = 0;
+  for (const [name, text] of Object.entries(contents)) { files[name] = { size: Buffer.byteLength(text), offset: String(offset) }; offset += Buffer.byteLength(text); }
+  const json = Buffer.from(JSON.stringify({ files: { webview: { files: { assets: { files } } } } }));
+  const size = 8 + Math.ceil(json.length / 4) * 4, prefix = Buffer.alloc(16);
+  prefix.writeUInt32LE(4); prefix.writeUInt32LE(size, 4); prefix.writeUInt32LE(size - 4, 8); prefix.writeUInt32LE(json.length, 12);
+  fs.writeFileSync(file, Buffer.concat([prefix, json, Buffer.alloc(size - 8 - json.length), ...Object.values(contents).map(text => Buffer.from(text))]));
+}
 const atom = 'let XP=Xl(K,({get:e})=>{if(t.authMethod!==`chatgpt`||n.rate_limit?.allowed!==!1)return!1;return!0});';
 const cases = [
   ['local-submit-quota', source],
@@ -84,20 +92,36 @@ test('指定客户端 ASAR：静态预检成功且不修改原文件', { skip: !
 });
 test('ASAR 无匹配、多匹配与损坏数据均拒绝', () => {
   const file = path.join(scratch, 'fixture.asar');
-  function archive(contents) {
-    const files = {}; let offset = 0;
-    for (const [name, text] of Object.entries(contents)) { files[name] = { size: Buffer.byteLength(text), offset: String(offset) }; offset += Buffer.byteLength(text); }
-    const json = Buffer.from(JSON.stringify({ files: { webview: { files: { assets: { files } } } } }));
-    const size = 8 + Math.ceil(json.length / 4) * 4, prefix = Buffer.alloc(16);
-    prefix.writeUInt32LE(4); prefix.writeUInt32LE(size, 4); prefix.writeUInt32LE(size - 4, 8); prefix.writeUInt32LE(json.length, 12);
-    fs.writeFileSync(file, Buffer.concat([prefix, json, Buffer.alloc(size - 8 - json.length), ...Object.values(contents).map(s => Buffer.from(s))]));
-  }
+  const archive = contents => writeArchive(file, contents);
   archive({ 'one.js': source }); assert.equal(jsonCommand('inspect', '--archive', file).location.mode, 'local-submit-quota');
   archive({ 'conditional.js': conditionalSource }); assert.equal(jsonCommand('inspect', '--archive', file).location.mode, 'conditional-composer-dual');
   archive({ 'one.js': source, 'conditional.js': conditionalSource }); assert.throws(() => command('inspect', '--archive', file));
   archive({ 'one.js': source, 'two.js': source }); assert.throws(() => command('inspect', '--archive', file));
   archive({ 'none.js': 'const noQuota=1' }); assert.throws(() => command('inspect', '--archive', file));
   fs.writeFileSync(file, Buffer.alloc(3)); assert.throws(() => command('inspect', '--archive', file));
+});
+test('跨文件额度：跟踪 export/import 别名，优先定位本地编辑器并拒绝断链和歧义', () => {
+  const file = path.join(scratch, 'modules.asar');
+  const contents = { 'quota.js': quotaModule, 'fixture.js': adapterModule, 'legacy.js': conditionalSource };
+  writeArchive(file, contents);
+  const manifest = jsonCommand('inspect', '--archive', file);
+  assert.equal(manifest.archiveName, 'webview/assets/fixture.js');
+  assert.equal(manifest.location.mode, 'local-submit-quota');
+  assert.equal(manifest.location.quotaVariable, 'quotaBlocked');
+  assert.equal(manifest.location.componentName, 'Adapter');
+  assert.equal(manifest.condition, '(quotaBlocked=false,false)');
+  assert.equal(manifest.bundleSha256, createHash('sha256').update(adapterModule).digest('hex'));
+  for (const broken of [
+    { ...contents, 'quota.js': quotaModule.replace('XP as quotaFlag', 'OTHER as quotaFlag') },
+    { ...contents, 'fixture.js': adapterModule.replace('quotaFlag as NativeQuota', 'wrongFlag as NativeQuota') },
+    { ...contents, 'fixture.js': adapterModule.replace('./quota.js', './unknown.js') },
+    { ...contents, 'fixture.js': adapterModule.replace('host===`local`&&NativeQuota', 'host===`remote`&&NativeQuota') },
+    { ...contents, 'fixture.js': adapterModule.replace('||quotaBlocked,next', ',next') },
+    { ...contents, 'second.js': adapterModule },
+  ]) {
+    writeArchive(file, broken);
+    assert.throws(() => command('inspect', '--archive', file));
+  }
 });
 test('临时数据目录的归属保护', () => {
   const foreign = directory(); fs.mkdirSync(foreign); fs.writeFileSync(path.join(foreign, 'keep.txt'), 'keep');
@@ -145,6 +169,49 @@ for (const [label, text] of [['原有额度读取', source], ['条件额度读�
     }
     assert.equal(fs.existsSync(path.join(probe.data, 'control.sock')), false);
     command('clean', '--data-dir', probe.data); assert.equal(fs.existsSync(probe.data), false);
+  } finally { await probe?.stop(); reader?.close(); await fixture.stop(); }
+});
+test('真实 V8 跨文件模块：本地额度解除，空输入、忙碌、上游禁用、模型加载及策略限制保留', { timeout: 20000 }, async () => {
+  const archive = path.join(scratch, 'runtime-modules.asar');
+  writeArchive(archive, { 'quota.js': quotaModule, 'fixture.js': adapterModule, 'legacy.js': conditionalSource });
+  const manifest = jsonCommand('inspect', '--archive', archive);
+  const fixture = await launchFixture(directory(), adapterModule, { './quota.js': quotaModule }); let reader; let probe;
+  try {
+    reader = new CdpSession(fixture.ws); await reader.connect();
+    await until(async () => await reader.evaluate('typeof fixture !== "undefined"'));
+    assert.equal(await reader.evaluate('fixture.render().submitDisabled'), true);
+    await reader.evaluate(`(()=>{
+      globalThis.cached=fixture.render();
+      globalThis.refreshes=0;
+      const hook={memoizedState:new Set(['keep']),queue:{dispatch(next){hook.memoizedState=next;globalThis.cached=fixture.render();globalThis.refreshes++;}}};
+      globalThis.composerHook=hook;
+      const root={__reactFiber$fixture:{type:fixture.render,memoizedState:hook}};
+      globalThis.document={querySelectorAll(){return[root]}};
+    })()`);
+    let paused = 0; reader.on('Debugger.paused', () => { paused++; void reader.send('Debugger.resume'); });
+    probe = await launchProbe(directory(), fixture.ws, manifest);
+    await until(() => probe.state().state === 'ready' || probe.child.exitCode !== null);
+    assert.equal(probe.state().state, 'ready', probe.errors());
+    assert.equal(await reader.evaluate('cached.submitDisabled'), false);
+    assert.equal(await reader.evaluate('refreshes'), 1);
+    assert.deepEqual(await reader.evaluate('[...composerHook.memoizedState]'), ['keep']);
+    assert.equal(await reader.evaluate('fixture.render().submitDisabled'), false);
+    for (const guard of ['busy', 'empty', 'disabled', 'modelLoading', 'policy']) {
+      assert.equal(await reader.evaluate(`fixture.render({${guard}:true}).submitDisabled`), true, guard);
+    }
+    assert.equal(await reader.evaluate('fixture.render({host:"remote"}).submitDisabled'), false);
+    assert.equal(paused, 0);
+    await probe.stop();
+    assert.equal(await reader.evaluate('cached.submitDisabled'), true);
+    assert.equal(await reader.evaluate('refreshes'), 2);
+    assert.equal(await reader.evaluate('fixture.render().submitDisabled'), true);
+    assert.equal(await reader.evaluate('fixture.render({host:"remote"}).submitDisabled'), false);
+    await reader.evaluate('composerHook.next={memoizedState:new Set(),queue:{dispatch(){}}}');
+    probe = await launchProbe(directory(), fixture.ws, manifest);
+    await until(() => probe.child.exitCode !== null);
+    assert.equal(probe.state().state, 'failed');
+    assert.match(probe.state().error, /缓存刷新失败/);
+    assert.equal(await reader.evaluate('fixture.render().submitDisabled'), true);
   } finally { await probe?.stop(); reader?.close(); await fixture.stop(); }
 });
 test('真实 V8：前端哈希不一致即停止，不挂载断点', { timeout: 12000 }, async () => {
@@ -211,12 +278,18 @@ async function fakeBrowser() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { ws: `ws://127.0.0.1:${server.address().port}/browser`, requests, sources, event, async close() { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); } };
 }
-test('Browser CDP：刷新、新窗口、多窗口清理及未知版本拒绝', { timeout: 15000 }, async () => {
+test('Browser CDP：跳过宠物浮层、刷新、新窗口、多窗口清理及未知版本拒绝', { timeout: 15000 }, async () => {
   const browser = await fakeBrowser(); let probe;
   try {
     probe = await launchProbe(directory(), browser.ws, manifestFor(), ['--browser']);
     await until(() => probe.state().state === 'ready' || probe.child.exitCode !== null);
     assert.equal(probe.state().state, 'ready', probe.errors());
+    for (const route of ['%2Favatar-overlay', '%2favatar-overlay', '/avatar-overlay']) {
+      browser.event('Target.targetCreated', { targetInfo: { targetId: 'avatar-' + route, type: 'page', url: 'app://-/index.html?initialRoute=' + route } });
+    }
+    await sleep(80);
+    assert.equal(browser.requests.some(item => item.method === 'Target.attachToTarget' && item.params.targetId.startsWith('avatar-')), false);
+    assert.equal(probe.state().state, 'ready');
     const mounted = () => browser.requests.filter(item => item.method === 'Debugger.setBreakpoint').length;
     browser.event('Runtime.executionContextsCleared', {}, 's-one');
     browser.event('Debugger.scriptParsed', { scriptId: '2', url }, 's-one');
